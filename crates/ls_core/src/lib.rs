@@ -25,14 +25,10 @@ struct LSClientCapabilities {
 #[serde(tag = "method", content = "params")]
 #[serde(rename_all = "lowercase")]
 enum LSMessageRequestBody {
-    Initialize { capabilities: LSClientCapabilities },
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(untagged)]
-#[serde(rename_all = "lowercase")]
-enum LSMessageRequestBodyOrUnknown {
-    RequestBody(LSMessageRequestBody),
+    Initialize {
+        capabilities: LSClientCapabilities,
+    },
+    #[serde(untagged)]
     Unknown {
         method: String,
         params: Option<serde_json::Value>,
@@ -71,7 +67,7 @@ impl LSMessageResponseInitialize {
     }
 }
 
-type LSMessageRequest = JsonRpcRequest<LSMessageRequestBodyOrUnknown>;
+type LSMessageRequest = JsonRpcRequest<LSMessageRequestBody>;
 
 type LSMessageResponse = JsonRpcResponse<LSMessageResponseBody>;
 
@@ -236,19 +232,14 @@ impl LServer {
         print!("{}", response)
     }
 
-    fn message_response(
-        &self,
-        request: LSMessageRequestBodyOrUnknown,
-    ) -> LSResult<LSMessageResponseBody> {
+    fn message_response(&self, request: LSMessageRequestBody) -> LSResult<LSMessageResponseBody> {
         match request {
-            LSMessageRequestBodyOrUnknown::RequestBody(request) => match request {
-                LSMessageRequestBody::Initialize { capabilities: _ } => {
-                    Ok(LSMessageResponseBody::Initialize(
-                        LSMessageResponseInitialize::new("myls", "0.0.1"),
-                    ))
-                }
-            },
-            LSMessageRequestBodyOrUnknown::Unknown { method, params } => {
+            LSMessageRequestBody::Initialize { capabilities: _ } => {
+                Ok(LSMessageResponseBody::Initialize(
+                    LSMessageResponseInitialize::new("myls", "0.0.1"),
+                ))
+            }
+            LSMessageRequestBody::Unknown { method, params } => {
                 debug!("Unknown request: {}. params={:?}", method, params);
                 Err(LSError::method_not_found(None, method))
             }
