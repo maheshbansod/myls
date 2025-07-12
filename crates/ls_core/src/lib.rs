@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    fmt::Display,
     io::{self, Read},
 };
 
@@ -28,6 +27,7 @@ enum LSMessageRequestBody {
     Initialize {
         capabilities: LSClientCapabilities,
     },
+    Shutdown,
     #[serde(untagged)]
     Unknown {
         method: String,
@@ -39,6 +39,7 @@ enum LSMessageRequestBody {
 #[serde(untagged)]
 enum LSMessageResponseBody {
     Initialize(LSMessageResponseInitialize),
+    Shutdown,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -105,7 +106,7 @@ struct LSMessageErrorBody {
 }
 
 impl LSMessageErrorBody {
-    fn from(kind: LSErrorKind) -> Self {
+    fn from(kind: LSError) -> Self {
         LSMessageErrorBody {
             code: kind.code(),
             message: kind.message(),
@@ -131,12 +132,12 @@ impl LServer {
                             Ok(response) => {
                                 let id = request.id;
                                 let response = LSMessageResponse::new(id, response);
-                                self.respond(response);
+                                self.respond(&response);
                             }
                             Err(err) => {
                                 self.respond_with_error(LSMessageError::new(
                                     request.id,
-                                    LSMessageErrorBody::from(err.kind),
+                                    LSMessageErrorBody::from(err),
                                 ));
                             }
                         }
@@ -144,14 +145,7 @@ impl LServer {
                     _ => todo!(),
                 },
                 Err(err) => {
-                    if let Some(request_id) = err.id {
-                        self.respond_with_error(LSMessageError::new(
-                            request_id,
-                            LSMessageErrorBody::from(err.kind),
-                        ));
-                    } else {
-                        debug!("Error: {err:?}");
-                    }
+                    debug!("Error: {err:?}");
                 }
             }
             println!("{{}}");
@@ -159,58 +153,39 @@ impl LServer {
     }
 
     #[instrument]
-    fn read() -> LSResult<LSMessage> {
+    fn read() -> Result<LSMessage, ParseError> {
         let mut buf = String::new();
         let mut content_length = None;
         loop {
             io::stdin()
                 .read_line(&mut buf)
-                .map_err(|err| LSError::parse(None, ParseError::Io(err)))?;
+                .map_err(|err| ParseError::Io(err))?;
+
             debug!("buf: '{buf:?}'");
+            if buf.len() == 0 {
+                break;
+            }
             if buf == "\r\n" {
                 break;
             }
-            let (name, value) = buf
-                .split_once(":")
-                .ok_or_else(|| LSError::parse(None, ParseError::Header))?;
+            let (name, value) = buf.split_once(":").ok_or_else(|| ParseError::Header)?;
             if name == "Content-Length" {
-                content_length = Some(
-                    value
-                        .trim()
-                        .parse()
-                        .map_err(|_e| LSError::parse(None, ParseError::Header))?,
-                );
+                content_length = Some(value.trim().parse().map_err(|_e| ParseError::Header)?);
             }
             if buf.ends_with("\r\n\r\n") {
                 break;
             }
         }
 
-        let content_length =
-            content_length.ok_or_else(|| LSError::parse(None, ParseError::Header))?;
+        let content_length = content_length.ok_or_else(|| ParseError::Header)?;
         let header = LSHeader { content_length };
         let mut buf = vec![0u8; header.content_length as usize];
         io::stdin()
             .read_exact(&mut buf)
-            .map_err(|err| LSError::parse(None, ParseError::Io(err)))?;
+            .map_err(|err| ParseError::Io(err))?;
         let content = String::from_utf8_lossy(&buf);
-        // let content: LSMessage = serde_json::from_str(&content)
-        //     .map_err(|e| LSError::parse(None, ParseError::JsonParsing((e, content.to_string()))))?;
-        let content: LSMessage = match serde_json::from_str(&content) {
-            Ok(content) => content,
-            Err(e) => {
-                debug!("content = {content:?}");
-                let content_body: LSMessageRequest =
-                    serde_json::from_str(&content).map_err(|e| {
-                        LSError::parse(None, ParseError::JsonParsing((e, content.to_string())))
-                    })?;
-                debug!("b{:?}", content_body);
-                return Err(LSError::parse(
-                    None,
-                    ParseError::JsonParsing((e, content.to_string())),
-                ));
-            }
-        };
+        let content: LSMessage = serde_json::from_str(&content)
+            .map_err(|e| ParseError::JsonParsing((e, content.to_string())))?;
         debug!("content: {:?}", content);
 
         Ok(content)
@@ -224,7 +199,7 @@ impl LServer {
         print!("{}", response)
     }
 
-    fn respond(&self, response: LSMessageResponse) {
+    fn respond(&self, response: &LSMessageResponse) {
         let response = serde_json::to_string(&response).unwrap();
         let content_length = response.len();
         let response = format!("Content-Length: {content_length}\r\n\r\n{response}");
@@ -239,9 +214,10 @@ impl LServer {
                     LSMessageResponseInitialize::new("myls", "0.0.1"),
                 ))
             }
+            LSMessageRequestBody::Shutdown => Ok(LSMessageResponseBody::Shutdown),
             LSMessageRequestBody::Unknown { method, params } => {
                 debug!("Unknown request: {}. params={:?}", method, params);
-                Err(LSError::method_not_found(None, method))
+                Err(LSError::MethodNotFound(method))
             }
         }
     }
@@ -253,54 +229,25 @@ struct LSHeader {
 
 type LSResult<T> = Result<T, LSError>;
 
-#[derive(Debug)]
-struct LSError {
-    id: Option<JsonRpcRequestId>,
-    kind: LSErrorKind,
-}
-
-impl LSError {
-    fn method_not_found(id: Option<JsonRpcRequestId>, method: String) -> Self {
-        Self {
-            id,
-            kind: LSErrorKind::MethodNotFound(method),
-        }
-    }
-    fn parse(id: Option<JsonRpcRequestId>, e: ParseError) -> Self {
-        Self {
-            id,
-            kind: LSErrorKind::Parse(e),
-        }
-    }
-}
-
-impl Display for LSError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "LSError: [id={:?}] {:?}", self.id, self.kind)
-    }
-}
-
-impl std::error::Error for LSError {}
-
 #[derive(Error, Debug)]
-enum LSErrorKind {
-    #[error("Parse error")]
-    Parse(ParseError),
+enum LSError {
+    // #[error("Parse error")]
+    // Parse(ParseError),
     #[error("Method not found error")]
     MethodNotFound(String),
 }
 
-impl LSErrorKind {
+impl LSError {
     fn code(&self) -> i32 {
         match self {
-            LSErrorKind::Parse(_) => -32700,
-            LSErrorKind::MethodNotFound(_) => -32601,
+            // LSErrorKind::Parse(_) => -32700,
+            LSError::MethodNotFound(_) => -32601,
         }
     }
     fn message(&self) -> String {
         match self {
-            LSErrorKind::Parse(err) => err.to_string(),
-            LSErrorKind::MethodNotFound(method) => format!("Method not found: {method}"),
+            // LSErrorKind::Parse(err) => err.to_string(),
+            LSError::MethodNotFound(method) => format!("Method not found: {method}"),
         }
     }
 }
@@ -325,8 +272,6 @@ struct JsonRpcMessageBase {
 struct JsonRpcError<ErrorBody> {
     id: JsonRpcRequestId,
     error: ErrorBody,
-    // method: String,
-    // params: Params,
     #[serde(flatten)]
     base: JsonRpcMessageBase,
 }
@@ -335,8 +280,6 @@ struct JsonRpcError<ErrorBody> {
 struct JsonRpcResponse<ResponseBody> {
     id: JsonRpcRequestId,
     result: ResponseBody,
-    // method: String,
-    // params: Params,
     #[serde(flatten)]
     base: JsonRpcMessageBase,
 }
@@ -348,8 +291,6 @@ struct JsonRpcRequest<RequestBody> {
     /// such that it's a JSON object containing keys method: string and params: any
     #[serde(flatten)]
     request: RequestBody,
-    // method: String,
-    // params: Params,
     #[serde(flatten)]
     base: JsonRpcMessageBase,
 }
@@ -366,10 +307,3 @@ enum JsonRpcRequestId {
     String(String),
     Integer(i32),
 }
-
-// #[derive(Serialize, Deserialize)]
-// #[serde(untagged)]
-// enum JsonRpcMessage<Params=> {
-//     Request(JsonRpcRequest<>),
-//     Response(JsonRpcMessage)
-// }
