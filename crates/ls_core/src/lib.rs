@@ -11,13 +11,21 @@ use tracing::{debug, instrument};
 #[serde(untagged)]
 enum LSMessage {
     Request(LSMessageRequest),
-    Notification,
+    Notification(LSMessageNotification),
     Response,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 struct LSClientCapabilities {
     workspace: serde_json::Value,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(tag = "method", content = "params")]
+#[serde(rename_all = "lowercase")]
+enum LSMessageNotificationBody {
+    Initialized {},
+    Exit,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -69,6 +77,7 @@ impl LSMessageResponseInitialize {
 }
 
 type LSMessageRequest = JsonRpcRequest<LSMessageRequestBody>;
+type LSMessageNotification = JsonRpcNotification<LSMessageNotificationBody>;
 
 type LSMessageResponse = JsonRpcResponse<LSMessageResponseBody>;
 
@@ -123,33 +132,51 @@ impl LServer {
     /// Blocks the thread and processes each message
     /// till the server exits
     pub fn run(self) {
+        // kinda a fail safe thing - avoids clogging logs
+        let mut error_count = 0;
         loop {
             match LServer::read() {
-                Ok(message) => match message {
-                    LSMessage::Request(request) => {
-                        let request_body = request.request;
-                        match self.message_response(request_body) {
-                            Ok(response) => {
-                                let id = request.id;
-                                let response = LSMessageResponse::new(id, response);
-                                self.respond(&response);
-                            }
-                            Err(err) => {
-                                self.respond_with_error(LSMessageError::new(
-                                    request.id,
-                                    LSMessageErrorBody::from(err),
-                                ));
+                Ok(message) => {
+                    error_count = 0;
+                    match message {
+                        LSMessage::Request(request) => {
+                            let request_body = request.request;
+                            match self.message_response(request_body) {
+                                Ok(response) => {
+                                    let id = request.id;
+                                    let response = LSMessageResponse::new(id, response);
+                                    self.respond(&response);
+                                }
+                                Err(err) => {
+                                    self.respond_with_error(LSMessageError::new(
+                                        request.id,
+                                        LSMessageErrorBody::from(err),
+                                    ));
+                                }
                             }
                         }
+                        LSMessage::Notification(notification) => match notification.notification {
+                            LSMessageNotificationBody::Initialized {} => {
+                                debug!("initialized!");
+                            }
+                            LSMessageNotificationBody::Exit => {
+                                break;
+                            }
+                        },
+                        _ => todo!(),
                     }
-                    _ => todo!(),
-                },
+                }
                 Err(err) => {
+                    error_count += 1;
                     debug!("Error: {err:?}");
+                    if error_count == 10 {
+                        break;
+                    }
                 }
             }
-            println!("{{}}");
         }
+
+        debug!("exiting");
     }
 
     #[instrument]
@@ -157,6 +184,7 @@ impl LServer {
         let mut buf = String::new();
         let mut content_length = None;
         loop {
+            debug!("Waiting for input");
             io::stdin()
                 .read_line(&mut buf)
                 .map_err(|err| ParseError::Io(err))?;
@@ -196,7 +224,7 @@ impl LServer {
         let content_length = response.len();
         let response = format!("Content-Length: {content_length}\r\n\r\n{response}");
         debug!(response);
-        print!("{}", response)
+        println!("{}", response)
     }
 
     fn respond(&self, response: &LSMessageResponse) {
@@ -204,7 +232,7 @@ impl LServer {
         let content_length = response.len();
         let response = format!("Content-Length: {content_length}\r\n\r\n{response}");
         debug!(response);
-        print!("{}", response)
+        println!("{}", response)
     }
 
     fn message_response(&self, request: LSMessageRequestBody) -> LSResult<LSMessageResponseBody> {
@@ -280,6 +308,16 @@ struct JsonRpcError<ErrorBody> {
 struct JsonRpcResponse<ResponseBody> {
     id: JsonRpcRequestId,
     result: ResponseBody,
+    #[serde(flatten)]
+    base: JsonRpcMessageBase,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct JsonRpcNotification<NotificationBody> {
+    /// How do i enforce that NotificationBody must have serde deserializer implemented
+    /// such that it's a JSON object containing keys method: string and params: any
+    #[serde(flatten)]
+    notification: NotificationBody,
     #[serde(flatten)]
     base: JsonRpcMessageBase,
 }
