@@ -1,7 +1,4 @@
-use std::{
-    collections::HashMap,
-    io::{self, Read},
-};
+use std::io::{self, Read};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -16,8 +13,22 @@ enum LSMessage {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct DefinitionClientCapabilities {
+    link_support: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct TextDocumentClientCapabilities {
+    definition: DefinitionClientCapabilities,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
 struct LSClientCapabilities {
     workspace: serde_json::Value,
+    text_document: Option<TextDocumentClientCapabilities>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -29,6 +40,17 @@ enum LSMessageNotificationBody {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+struct LsTypePosition {
+    character: u32,
+    line: u32,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct LsTypeTextDocument {
+    uri: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "method", content = "params")]
 #[serde(rename_all = "lowercase")]
 enum LSMessageRequestBody {
@@ -36,6 +58,12 @@ enum LSMessageRequestBody {
         capabilities: LSClientCapabilities,
     },
     Shutdown,
+    #[serde(rename = "textDocument/definition")]
+    #[serde(rename_all = "camelCase")]
+    TextDocumentDefinition {
+        position: LsTypePosition,
+        text_document: LsTypeTextDocument,
+    },
     #[serde(untagged)]
     Unknown {
         method: String,
@@ -47,6 +75,7 @@ enum LSMessageRequestBody {
 #[serde(untagged)]
 enum LSMessageResponseBody {
     Initialize(LSMessageResponseInitialize),
+    Location(LSMessageResponseLocation),
     Shutdown,
 }
 
@@ -57,17 +86,52 @@ struct LSInfo {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+struct LsTypeRange {
+    start: LsTypePosition,
+    end: LsTypePosition,
+}
+
+impl LsTypeRange {
+    fn beginning() -> Self {
+        Self {
+            start: LsTypePosition {
+                character: 0,
+                line: 0,
+            },
+            end: LsTypePosition {
+                character: 0,
+                line: 0,
+            },
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct LSMessageResponseLocation {
+    uri: String,
+    range: LsTypeRange,
+}
+
+impl LSMessageResponseLocation {
+    fn new(uri: String, range: LsTypeRange) -> Self {
+        Self { uri, range }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct LSMessageResponseInitialize {
-    /// todo: server capabilities
-    capabilities: HashMap<String, String>,
+    capabilities: serde_json::Value,
     server_info: LSInfo,
 }
 
 impl LSMessageResponseInitialize {
-    fn new(name: &str, version: &str) -> Self {
+    fn new(name: &str, version: &str, _capabilities: LSClientCapabilities) -> Self {
+        let server_capabilities = serde_json::json!({
+            "definitionProvider": true
+        });
         Self {
-            capabilities: HashMap::new(),
+            capabilities: server_capabilities,
             server_info: LSInfo {
                 name: name.to_owned(),
                 version: version.to_owned(),
@@ -237,9 +301,22 @@ impl LServer {
 
     fn message_response(&self, request: LSMessageRequestBody) -> LSResult<LSMessageResponseBody> {
         match request {
-            LSMessageRequestBody::Initialize { capabilities: _ } => {
+            LSMessageRequestBody::Initialize { capabilities } => {
                 Ok(LSMessageResponseBody::Initialize(
-                    LSMessageResponseInitialize::new("myls", "0.0.1"),
+                    LSMessageResponseInitialize::new("myls", "0.0.1", capabilities),
+                ))
+            }
+            LSMessageRequestBody::TextDocumentDefinition {
+                position,
+                text_document,
+            } => {
+                debug!(
+                    "textDocument/definition recieved at position {position:?} in file: '{}'",
+                    text_document.uri
+                );
+                let uri = text_document.uri;
+                Ok(LSMessageResponseBody::Location(
+                    LSMessageResponseLocation::new(uri, LsTypeRange::beginning()),
                 ))
             }
             LSMessageRequestBody::Shutdown => Ok(LSMessageResponseBody::Shutdown),
