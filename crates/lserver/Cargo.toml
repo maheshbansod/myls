@@ -1,6 +1,11 @@
+
 [package]
 name = "lserver"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+ls_core = { version = "0.1.0", path = "../ls_core" }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-appender = "0.2"
