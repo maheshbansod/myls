@@ -116,18 +116,18 @@ impl LsTypeRange {
             },
         }
     }
-    fn beginning() -> Self {
-        Self {
-            start: LsTypePosition {
-                character: 0,
-                line: 0,
-            },
-            end: LsTypePosition {
-                character: 0,
-                line: 0,
-            },
-        }
-    }
+    // fn beginning() -> Self {
+    //     Self {
+    //         start: LsTypePosition {
+    //             character: 0,
+    //             line: 0,
+    //         },
+    //         end: LsTypePosition {
+    //             character: 0,
+    //             line: 0,
+    //         },
+    //     }
+    // }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -277,7 +277,6 @@ impl LServer {
                 .read_line(&mut buf)
                 .map_err(|err| ParseError::Io(err))?;
 
-            debug!("buf: '{buf:?}'");
             if buf.len() == 0 {
                 break;
             }
@@ -285,6 +284,7 @@ impl LServer {
                 break;
             }
             let (name, value) = buf.split_once(":").ok_or_else(|| ParseError::Header)?;
+            debug!("got header: '{:?}': '{:?}'", name, value);
             if name == "Content-Length" {
                 content_length = Some(value.trim().parse().map_err(|_e| ParseError::Header)?);
             }
@@ -311,16 +311,20 @@ impl LServer {
     fn respond_with_error(&self, response: LSMessageError) {
         let response = serde_json::to_string(&response).unwrap();
         let content_length = response.len();
-        let response = format!("Content-Length: {content_length}\r\n\r\n{response}");
-        debug!(response);
+        let response = format!(
+            "Content-Length: {content_length}\r\nContent-Length: {content_length}\r\n\r\n{response}"
+        );
+        debug!("respond with error: {:?}", response);
         println!("{}", response)
     }
 
     fn respond(&self, response: &LSMessageResponse) {
         let response = serde_json::to_string(&response).unwrap();
         let content_length = response.len();
-        let response = format!("Content-Length: {content_length}\r\n\r\n{response}");
-        debug!(response);
+        let response = format!(
+            "Content-Length: {content_length}\r\nContent-Length: {content_length}\r\n\r\n{response}"
+        );
+        debug!("respond: {:?}", response);
         println!("{}", response)
     }
 
