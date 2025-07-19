@@ -1,0 +1,27 @@
+{
+  "name": "myls",
+  "version": "1.0.0",
+  "description": "",
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "publisher": "maheshbansod",
+  "keywords": [],
+  "author": "maheshbansod",
+  "license": "ISC",
+  "main": "./out/extension.js",
+  "engines": {
+    "vscode": "^1.51.0"
+  },
+  "activationEvents": ["*"],
+  "contributes": {},
+  "packageManager": "pnpm@10.12.1",
+  "devDependencies": {
+    "@types/node": "^24.0.14",
+    "@types/vscode": "^1.102.0",
+    "typescript": "^5.8.3",
+    "vscode-languageclient": "^9.0.1"
+  }
+}
